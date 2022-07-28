@@ -3,7 +3,8 @@
 
 #[macro_use]
 extern crate user_lib;
-use user_lib::{close, open, unlink, write, OpenFlags};
+
+use user_lib::{close, open, unlink, write, OpenFlags, fstat, console::print, Stat};
 
 /// 测试大量 open/unlink，输出 Test mass open/unlink OK! 就算正确。
 
@@ -20,9 +21,15 @@ pub fn main() -> i32 {
         for _ in 0..50 {
             write(fd, test_str.as_bytes());
         }
+        let stat = Stat::new();
+        fstat(fd, &stat);
+        println!("nlink: {}",stat.nlink);
         close(fd);
         assert_eq!(unlink(fname), 0);
         let fd = open(fname, OpenFlags::RDONLY);
+        fstat(fd as usize, &stat);
+        println!("nlink: {}",stat.nlink);
+        println!("fd: {}, itr: {}", fd, i);
         assert!(fd < 0);
         println!("test iteration {}", i)
     }
