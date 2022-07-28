@@ -91,6 +91,11 @@ impl Inode {
             })
         })
     }
+    pub fn find_inode_id_by_name(&self, name: &str) -> Option<u32> {
+        self.read_disk_inode(|disk_inode| {
+            self.find_inode_id(name, disk_inode)
+        })
+    }
     /// Increase the size of a disk inode
     fn increase_size(
         &self,
@@ -207,5 +212,110 @@ impl Inode {
             }
         });
         block_cache_sync_all();
+    }
+    // create a new link
+    pub fn create_link(&self, old_name: &str, new_name: &str) -> isize {
+        if self.modify_disk_inode(|root_inode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.find_inode_id(new_name, root_inode)
+        }).is_some() {
+            return -1;
+        }
+        
+        if let Some(old_inode_id) = self.read_disk_inode(|root_inode| {
+            // has the file been created?
+            self.find_inode_id(old_name, root_inode)
+        }) {
+            self.modify_disk_inode(|root_inode| {
+                // append file in the dirent
+                let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                let new_size = (file_count + 1) * DIRENT_SZ;
+                // increase size
+                let mut fs = self.fs.lock();
+                self.increase_size(new_size as u32, root_inode, &mut fs);
+                drop(fs);
+                // write dirent
+                let dirent = DirEntry::new(new_name, old_inode_id);
+                root_inode.write_at(
+                    file_count * DIRENT_SZ,
+                    dirent.as_bytes(),
+                    &self.block_device,
+                );
+            });
+            self.find(new_name).unwrap().modify_disk_inode(|disk_inode| {
+                disk_inode.nlink += 1;
+            });
+            0
+        } else {
+            return -1;
+        }
+    }
+
+    pub fn destory_entry(&self, inode_name: &str) -> isize {
+        // check if inode is a dir
+        if self.read_disk_inode(|root_inode| {
+            root_inode.is_file()
+        }){
+            return -1;
+        }
+
+        if let Some(inode) = self.find(inode_name) {
+            // inode is a true node
+            self.find(inode_name).unwrap().modify_disk_inode(|disk_inode| {
+                disk_inode.nlink -= 1;
+            });
+            // check if it's the only link to disk_node
+            if inode.read_disk_inode(|disk_inode| {
+                disk_inode.nlink <= 0
+            }){
+                // last link to inode, clear inode and file
+                inode.clear();
+                let inode_id = self.find_inode_id_by_name(inode_name).unwrap();
+                let mut fs = self.fs.lock();
+                fs.dealloc_inode(inode_id);
+                drop(fs);
+            } 
+            // clear entry
+            self.modify_disk_inode(|disk_inode| {
+                // write dirent
+                let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+                let mut dirent = DirEntry::empty();
+                for i in 0..file_count {
+                    assert_eq!(
+                        disk_inode.read_at(
+                            DIRENT_SZ * i,
+                            dirent.as_bytes_mut(),
+                            &self.block_device,
+                        ),
+                        DIRENT_SZ,
+                    );
+                    if dirent.name() == inode_name {
+                        dirent.as_bytes_mut().fill(0);
+                        disk_inode.write_at(
+                            DIRENT_SZ * i, 
+                            dirent.as_bytes(), 
+                            &self.block_device,
+                        );
+                        break;
+                    }
+                }
+            });
+            // dealloc inode_id
+            0
+        } else {
+            -1
+        }
+    }
+    pub fn get_nlink(&self) -> u32 {
+        self.read_disk_inode(|disk_inode| {
+            disk_inode.nlink
+        })
+    }
+    pub fn get_file_type(&self) -> DiskInodeType {
+        self.read_disk_inode(|disk_inode| {
+            disk_inode.file_type()
+        })
     }
 }
